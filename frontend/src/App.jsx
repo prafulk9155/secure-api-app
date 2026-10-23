@@ -1,24 +1,5 @@
 import React, { useState, useEffect } from 'react';
 
-async function computeHmac(secret, message) {
-  const enc = new TextEncoder();
-  const key = await window.crypto.subtle.importKey(
-    'raw',
-    enc.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sigBuf = await window.crypto.subtle.sign('HMAC', key, enc.encode(message));
-  return Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function computeSha256(str) {
-  const enc = new TextEncoder();
-  const hashBuf = await window.crypto.subtle.digest('SHA-256', enc.encode(str));
-  return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
 export default function App() {
   const [products, setProducts] = useState([]);
   const [user, setUser] = useState(null);
@@ -28,22 +9,7 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const [blogs, setBlogs] = useState([]);
   const [selectedBlog, setSelectedBlog] = useState(null);
-  const [session, setSession] = useState(null);
-  const [accessMode, setAccessMode] = useState('token'); // 'token' | 'secretCode' | 'unauthorized'
-
-  const fetchWebSession = async () => {
-    try {
-      const res = await fetch('/api/web/session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ turnstileToken: 'dev-token' })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSession(data);
-      }
-    } catch {}
-  };
+  const [testMode, setTestMode] = useState('app'); // 'app' | 'direct' | 'secretCode'
 
   useEffect(() => {
     fetch('/api/products')
@@ -55,66 +21,54 @@ export default function App() {
       .then(res => res.json())
       .then(data => setUser(data.user))
       .catch(() => {});
-
-    fetchWebSession();
   }, []);
 
-  const getBlogHeaders = async (path) => {
-    if (accessMode === 'secretCode') {
+  const getHeaders = () => {
+    if (testMode === 'secretCode') {
       return { 'secretCode': 'ALLOWED' };
     }
-    if (accessMode === 'unauthorized') {
-      return {};
+    if (testMode === 'direct') {
+      return {}; // Simulates external request without our app header
     }
-    // Default: 10m Token + HMAC + Nonce
-    if (!session?.token) {
-      await fetchWebSession();
-    }
-    const timestamp = Date.now().toString();
-    const nonce = crypto.randomUUID();
-    const bodyHash = await computeSha256('');
-    const payload = `GET\n${path}\n${timestamp}\n${nonce}\n${bodyHash}`;
-    const signature = await computeHmac(session?.clientHmacSecret || 'secure-hmac-shared-key-1234567890', payload);
-
-    return {
-      'Authorization': `Bearer ${session?.token || ''}`,
-      'x-timestamp': timestamp,
-      'x-nonce': nonce,
-      'x-signature': signature
-    };
+    // Default: Authenticated as our web application
+    return { 'x-app-source': 'secure-api-app' };
   };
 
   const loadBlogs = async () => {
     setMessage('');
     try {
-      const headers = await getBlogHeaders('/api/blogs');
-      const res = await fetch('/api/blogs', { headers });
+      const res = await fetch('/api/blogs', {
+        headers: getHeaders(),
+        credentials: 'include'
+      });
       const data = await res.json();
       if (res.ok) {
         setBlogs(data);
         setSelectedBlog(null);
         setView('blogs');
       } else {
-        setMessage(`Security Block: ${data.error || 'Access Denied'} (HTTP ${res.status})`);
+        setMessage(`Security Block: ${data.error} (HTTP ${res.status})`);
       }
     } catch (err) {
-      setMessage(`Request error: ${err.message}`);
+      setMessage(`Network error: ${err.message}`);
     }
   };
 
   const openBlog = async (id) => {
     try {
-      const headers = await getBlogHeaders(`/api/blogs/${id}`);
-      const res = await fetch(`/api/blogs/${id}`, { headers });
+      const res = await fetch(`/api/blogs/${id}`, {
+        headers: getHeaders(),
+        credentials: 'include'
+      });
       const data = await res.json();
       if (res.ok) {
         setSelectedBlog(data);
         setView('blogDetail');
       } else {
-        setMessage(`Security Block: ${data.error || 'Access Denied'} (HTTP ${res.status})`);
+        setMessage(`Security Block: ${data.error} (HTTP ${res.status})`);
       }
     } catch (err) {
-      setMessage(`Request error: ${err.message}`);
+      setMessage(`Network error: ${err.message}`);
     }
   };
 
@@ -193,17 +147,17 @@ export default function App() {
         </nav>
       </header>
 
-      {/* Security Status & Mode Bar */}
-      <div style={{ background: '#f0f4f8', padding: '10px 14px', borderRadius: 6, margin: '14px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontSize: 13 }}>
+      {/* Security validation bar */}
+      <div style={{ background: '#f5f5f5', padding: '10px 14px', borderRadius: 6, margin: '14px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontSize: 13 }}>
         <div>
-          <strong>Blog Security:</strong> Bound Token (10m TTL) + HMAC Nonce, Rate Limit & Turnstile
+          <strong>Blog Security:</strong> Open for our app only (no user auth needed) • Direct external hits require <code>secretCode: ALLOWED</code>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <span>Access Mode:</span>
-          <select value={accessMode} onChange={(e) => setAccessMode(e.target.value)} style={{ padding: 4 }}>
-            <option value="token">Website Token + HMAC Nonce</option>
-            <option value="secretCode">secretCode: ALLOWED Header</option>
-            <option value="unauthorized">Unauthorized (Simulate Block)</option>
+          <span>Test Access As:</span>
+          <select value={testMode} onChange={(e) => setTestMode(e.target.value)} style={{ padding: '4px 8px' }}>
+            <option value="app">Our Web App (Allowed)</option>
+            <option value="secretCode">secretCode: ALLOWED Header (Allowed)</option>
+            <option value="direct">Direct / External (Blocked - 401)</option>
           </select>
         </div>
       </div>

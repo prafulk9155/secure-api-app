@@ -4,7 +4,7 @@ const cors = require('cors');
 const session = require('express-session');
 const connectDB = require('./api/db');
 const { Product, Order, Blog } = require('./models');
-const { issueWebSession, secureBlogAccess } = require('./security/securityService');
+const { secureBlogAccess } = require('./security/securityService');
 
 const app = express();
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
@@ -71,32 +71,6 @@ app.get('/api/orders', async (req, res) => {
   if (!req.session?.user) return res.status(401).json({ error: 'Login required' });
   const orders = await Order.find({ user: req.session.user.username }).sort({ createdAt: -1 });
   res.json(orders);
-});
-
-async function verifyTurnstile(token, ip) {
-  const secretKey = process.env.TURNSTILE_SECRET_KEY;
-  if (!secretKey) return true;
-  try {
-    const formData = new URLSearchParams({ secret: secretKey, response: token || '' });
-    if (ip) formData.append('remoteip', ip);
-    const result = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST',
-      body: formData
-    });
-    const outcome = await result.json();
-    return outcome.success;
-  } catch {
-    return false;
-  }
-}
-
-app.post(['/api/web/session', '/web/session'], async (req, res) => {
-  const { turnstileToken } = req.body || {};
-  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1').split(',')[0].trim();
-  const valid = await verifyTurnstile(turnstileToken, ip);
-  if (!valid) return res.status(403).json({ error: 'Turnstile verification failed' });
-  const sessionData = issueWebSession(req);
-  res.json({ success: true, ...sessionData });
 });
 
 app.get('/api/blogs', secureBlogAccess, async (req, res) => {
