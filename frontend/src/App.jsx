@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { secureFetch } from './api/secureFetch';
+import AttackLab from './AttackLab';
 
 export default function App() {
   const [products, setProducts] = useState([]);
@@ -9,7 +11,6 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const [blogs, setBlogs] = useState([]);
   const [selectedBlog, setSelectedBlog] = useState(null);
-  const [testMode, setTestMode] = useState('app'); // 'app' | 'direct' | 'secretCode'
 
   useEffect(() => {
     fetch('/api/products')
@@ -23,31 +24,16 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  const getHeaders = () => {
-    if (testMode === 'secretCode') {
-      return { 'secretCode': 'ALLOWED' };
-    }
-    if (testMode === 'direct') {
-      return {}; // Simulates external request without our app header
-    }
-    // Default: Authenticated as our web application
-    return { 'x-app-source': 'secure-api-app' };
-  };
-
   const loadBlogs = async () => {
     setMessage('');
     try {
-      const res = await fetch('/api/blogs', {
-        headers: getHeaders(),
-        credentials: 'include'
-      });
-      const data = await res.json();
+      const { res, data } = await secureFetch('/api/blogs');
       if (res.ok) {
         setBlogs(data);
         setSelectedBlog(null);
         setView('blogs');
       } else {
-        setMessage(`Security Block: ${data.error} (HTTP ${res.status})`);
+        setMessage(`Security Block: ${data?.reason} (HTTP ${res.status})`);
       }
     } catch (err) {
       setMessage(`Network error: ${err.message}`);
@@ -56,16 +42,12 @@ export default function App() {
 
   const openBlog = async (id) => {
     try {
-      const res = await fetch(`/api/blogs/${id}`, {
-        headers: getHeaders(),
-        credentials: 'include'
-      });
-      const data = await res.json();
+      const { res, data } = await secureFetch(`/api/blogs/${id}`);
       if (res.ok) {
         setSelectedBlog(data);
         setView('blogDetail');
       } else {
-        setMessage(`Security Block: ${data.error} (HTTP ${res.status})`);
+        setMessage(`Security Block: ${data?.reason || data?.error} (HTTP ${res.status})`);
       }
     } catch (err) {
       setMessage(`Network error: ${err.message}`);
@@ -135,6 +117,7 @@ export default function App() {
         <nav style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <button onClick={() => setView('products')}>Products</button>
           <button onClick={loadBlogs}>Blogs</button>
+          <button onClick={() => setView('lab')}>Attack Lab</button>
           {user ? (
             <>
               <button onClick={loadOrders}>My Orders</button>
@@ -147,22 +130,15 @@ export default function App() {
         </nav>
       </header>
 
-      {/* Security validation bar */}
-      <div style={{ background: '#f5f5f5', padding: '10px 14px', borderRadius: 6, margin: '14px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontSize: 13 }}>
-        <div>
-          <strong>Blog Security:</strong> Open for our app only (no user auth needed) • Direct external hits require <code>secretCode: ALLOWED</code>
-        </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <span>Test Access As:</span>
-          <select value={testMode} onChange={(e) => setTestMode(e.target.value)} style={{ padding: '4px 8px' }}>
-            <option value="app">Our Web App (Allowed)</option>
-            <option value="secretCode">secretCode: ALLOWED Header (Allowed)</option>
-            <option value="direct">Direct / External (Blocked - 401)</option>
-          </select>
-        </div>
+      {/* Security info bar */}
+      <div style={{ background: '#f5f5f5', padding: '10px 14px', borderRadius: 6, margin: '14px 0', fontSize: 13 }}>
+        <strong>Blog Security:</strong> no login needed, but every call is signed by this website (one-time HMAC per request).
+        Partners use a tracked secret code. Try to break it in the <a href="#" onClick={(e) => { e.preventDefault(); setView('lab'); }}>Attack Lab</a>.
       </div>
 
       {message && <div style={{ background: message.includes('Block') ? '#ffebee' : '#eef', color: message.includes('Block') ? '#c62828' : '#1a237e', padding: 10, margin: '14px 0', borderRadius: 4 }}>{message}</div>}
+
+      {view === 'lab' && <AttackLab />}
 
       {view === 'login' && (
         <div style={{ maxWidth: 360, margin: '40px auto', border: '1px solid #ccc', padding: 24, borderRadius: 8 }}>

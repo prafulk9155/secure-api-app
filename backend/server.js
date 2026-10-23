@@ -3,17 +3,23 @@ const express = require('express');
 const cors = require('cors');
 const session = require('express-session');
 const connectDB = require('./api/db');
-const { Product, Order, Blog } = require('./models');
-const { secureBlogAccess } = require('./security/securityService');
+const { Product, Order, Blog, RequestLog } = require('./models');
+const config = require('./security/config');
+const { getClientIp } = require('./security/clientIp');
+const { issueWebSession } = require('./security/webSession');
+const { publicRouteGuard } = require('./security/publicRouteGuard');
 
 const app = express();
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+// req.ip only trusts X-Forwarded-For from these proxies. Set TRUST_PROXY to your load balancer in production.
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
+app.use(cors({ origin: config.CLIENT_ORIGIN, credentials: true }));
+// Keep the exact bytes received so the request signature covers the real body.
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(session({
-  secret: 'simple-secret-12345',
+  secret: process.env.SESSION_SECRET || 'dev-session-secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, secure: false, maxAge: 24 * 60 * 60 * 1000 }
+  cookie: { httpOnly: true, secure: process.env.COOKIE_SECURE === 'true', maxAge: 24 * 60 * 60 * 1000 }
 }));
 
 const seedData = async () => {
@@ -73,12 +79,16 @@ app.get('/api/orders', async (req, res) => {
   res.json(orders);
 });
 
-app.get('/api/blogs', secureBlogAccess, async (req, res) => {
+// --- Public APIs locked to our website (signed web session) or partners (secret code) ---
+
+app.post('/api/web/session', issueWebSession);
+
+app.get('/api/blogs', publicRouteGuard, async (req, res) => {
   const blogs = await Blog.find().sort({ createdAt: -1 });
   res.json(blogs);
 });
 
-app.get('/api/blogs/:id', secureBlogAccess, async (req, res) => {
+app.get('/api/blogs/:id', publicRouteGuard, async (req, res) => {
   try {
     const blog = await Blog.findById(req.params.id);
     if (!blog) return res.status(404).json({ error: 'Blog not found' });
@@ -88,9 +98,51 @@ app.get('/api/blogs/:id', secureBlogAccess, async (req, res) => {
   }
 });
 
-connectDB().then(() => {
-  seedData();
-  app.listen(5000, () => console.log('Backend running on http://localhost:5000'));
+// Public POST, so the demo can show that the signature also covers the body.
+app.post('/api/subscribe', publicRouteGuard, (req, res) => {
+  const { email } = req.body || {};
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  res.json({ success: true, email, channel: req.apiAccess.channel });
 });
+
+// --- Usage view: who called the public APIs and what got rejected ---
+
+function adminOnly(req, res, next) {
+  const allowed = config.ADMIN_KEY
+    ? req.get('x-admin-key') === config.ADMIN_KEY
+    : getClientIp(req) === '127.0.0.1';
+  if (!allowed) return res.status(403).json({ error: 'Forbidden' });
+  next();
+}
+
+app.get('/api/admin/logs', adminOnly, async (req, res) => {
+  const since = new Date(Date.now() - 60 * 60 * 1000);
+  const summary = await RequestLog.aggregate([
+    { $match: { at: { $gte: since } } },
+    { $group: { _id: { channel: '$channel', reason: '$reason', client: '$clientName' }, count: { $sum: 1 } } },
+    { $sort: { count: -1 } }
+  ]);
+  const recent = await RequestLog.find().sort({ at: -1 }).limit(25).lean();
+  res.json({
+    guardMode: config.GUARD_MODE,
+    since,
+    summary: summary.map(({ _id, count }) => ({ ..._id, count })),
+    recent
+  });
+});
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+const port = Number(process.env.API_PORT || process.env.PORT) || 5000;
+
+if (require.main === module) {
+  connectDB().then(() => {
+    seedData();
+    app.listen(port, () => console.log(`Backend running on http://localhost:${port} (guard mode: ${config.GUARD_MODE})`));
+  });
+}
 
 module.exports = app;
